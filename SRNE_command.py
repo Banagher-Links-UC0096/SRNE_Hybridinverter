@@ -148,7 +148,8 @@ write_command={
     'Battery_equalization_charge_timeout':[
         0xe023,1, 0,23,0,"均等充電遅延"    ,"min",120,0,120,"設定19"],#21
     'BMS_charge_limit_mode':[
-        0xe025,1, 5, 4,8,"充電制御"        ,"",3,0,2,"設定39","OFF","BMS制御","INV制御"],#26
+        0xe025,1, 5, 4,8,"充電制御"        ,"",3,0,2,"設定39",
+        "OFF","BMS制御","INV制御"],#26
     '1-section_start_charge_time':[
         0xe026,1,10, 2,7,"充電開始時間１"  ,"",0,0,0,"設定40"],#55
     '1-section_end_charge_time':[
