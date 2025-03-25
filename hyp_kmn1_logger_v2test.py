@@ -14,15 +14,13 @@ import seaborn as sns
 import numpy as np
 import concurrent.futures
 import os
+# オリジナルファイル組込
 import SRNE_command as SRNE
 import KMN1_command as KM
+import select_port as com
 #import dessdata_chart as chart
 
 interval1=0 # 待ち時間（秒）+10秒
-USB1='COM10' # HYP ID1 USBポート
-USB2='COM11' # HYP ID2 USBポート
-USB3='COM12' # KM-N1 USBポート
-
 # ----------Modbusデータ辞書読込
 # [0:address,1:byte,2:x,3:y,4:type,5:name,6:unit,7:len,8:min,9:max,10:set,11:data...]
 r_data=SRNE.read_command
@@ -85,9 +83,13 @@ i_data=[[0x0000,[0,998],[0,966]],[0x0002,[0,996],[0,1012]],[0x0004,[0,1994],[0,1
         [0x0220,[0,444],[0,0]],[0x0222,[0,8888],[0,0]],[0x0224,[0,99999],[0,0]],
         [0x0226,[0,555],[0,0]],[0x0228,[0xffff,0xffff],[0,0]]]
 # ----------Modbus接続設定
-client1=Mod(port=USB1,framer="rtu",baudrate=9600,bytesize=8,parity='N',stopbits=1,timeout=50) # Hybrid1
-client2=Mod(port=USB2,framer="rtu",baudrate=9600,bytesize=8,parity='N',stopbits=1,timeout=50) # Hyblid2
-client3=Mod(port=USB3,framer="rtu",baudrate=9600,bytesize=8,parity='N',stopbits=2,timeout=50) # KM-N1
+p_list=[]
+m_list=["ハイブリッドインバーターID1","ハイブリッドインバーターID2","KM-N1"]
+p_list = [com.p_select(name, p_list) for name in m_list]
+print(p_list)
+client1=Mod(port=p_list[0],framer="rtu",baudrate=9600,bytesize=8,parity='N',stopbits=1,timeout=50) # Hybrid1
+client2=Mod(port=p_list[1],framer="rtu",baudrate=9600,bytesize=8,parity='N',stopbits=1,timeout=50) # Hyblid2
+client3=Mod(port=p_list[2],framer="rtu",baudrate=9600,bytesize=8,parity='N',stopbits=2,timeout=50) # KM-N1
 
 # ----------Modbusデータ取得
 # input(hybrid_address,hybrid_count,KM-N1_address,KM-N1_count)
@@ -175,43 +177,36 @@ def hy_test(hy_add, hy_count, slave):  # Hybrid未接続処理
 def km_test(km_add, km_count): # KM-N1未接続を処理する関数
     read_data3, read_data4 = next(
         ((item[1], item[2]) for item in i_data if item[0] == km_add), ([0], [0]))
-    return read_data3 * km_count, read_data4 * km_count
-def modbus_read(hy_add, hy_count,km_add,km_count): # 並列実行
-    errors = []
-    results = []
+    return read_data3 * km_count
+
+def modbus_read(hy_add, hy_count, km_add, km_count):  # 並列実行
     with concurrent.futures.ThreadPoolExecutor() as executor:
         # 各クライアント処理をスケジュール
         futures = [
-            executor.submit(process_client1, 
-                hy_add, hy_count, "Hybrid1", hy_test, errors),
-            executor.submit(process_client2, 
-                hy_add, hy_count, "Hybrid2", hy_test, errors),
-            executor.submit(process_client3, 
-                km_add, km_count, "KM-N1", km_test, errors),]
-        # 処理完了時に結果を収集
-        for future in concurrent.futures.as_completed(futures):
-            results.append(future.result())
-    m_data = {"data1": None, "data2": None, "data3": None, "data4": None}  # データを格納する辞書
-    error_list = set()  # エラーメッセージを一意にするためにセットを使用
+            executor.submit(process_client1, hy_add, hy_count, "Hybrid1", hy_test, []),
+            executor.submit(process_client2, hy_add, hy_count, "Hybrid2", hy_test, []),
+            executor.submit(process_client3, km_add, km_count, "KM-N1", km_test, [])
+        ]
+        results = [future.result() for future in concurrent.futures.as_completed(futures)]
 
-    for result in results:
-        # データを格納
-        if "Hybrid1" in result:
-            m_data["data1"] = result["Hybrid1"]["data1"]  # data1を格納
-            error_list.update(result["Hybrid1"].get("errors", []))  # Hybrid1のエラーをセットに追加
-        if "Hybrid2" in result:
-            m_data["data2"] = result["Hybrid2"]["data2"]  # data2を格納
-            error_list.update(result["Hybrid2"].get("errors", []))  # Hybrid2のエラーをセットに追加
-        if "KM-N1" in result:
-            m_data["data3"] = result["KM-N1"]["data3"]  # data3を格納
-            m_data["data4"] = result["KM-N1"]["data4"]  # data4を格納
-            error_list.update(result["KM-N1"].get("errors", []))  # KM-N1のエラーをセットに追加
+    # データ格納辞書とエラーセット
+    m_data = {key: None for key in ["data1", "data2", "data3", "data4"]}
+    error_list = {error for result in results for key in result if "errors" in result[key]
+                  for error in result[key]["errors"]}
 
-    # エラーメッセージを結合
+    # データを辞書に更新
+    for key, data_keys in [("Hybrid1", ["data1"]), 
+                           ("Hybrid2", ["data2"]), 
+                           ("KM-N1", ["data3", "data4"])]:
+        for result in results:
+            if key in result:
+                m_data.update({dk: result[key].get(dk) for dk in data_keys})
+
+    # エラーメッセージの結合
     err = "\n".join(f"- {error}" for error in sorted(error_list)) if error_list else "\nNo errors encountered."
 
-    # 指定した順番でm_dataの値を返す
     return m_data["data1"], m_data["data2"], m_data["data3"], m_data["data4"], err
+
     
 # ----------データ変換    
 def ffff(rdd):return rdd - 65536 if rdd > 32767 else rdd  # 16bit負変換  
@@ -266,7 +261,7 @@ def data_read(): # データ処理
         #print(hex(row1[a][1][0]),byte, hex(row2[b][1][0]),2)
         r_data1, r_data2,r_data3,r_data4, err = modbus_read(row1[a][1][0], byte, row2[b][1][0],2)
         #print(r_data1,r_data2,r_data3,r_data4)
-        hyrd1.append(r_data1),hyrd2.append(r_data2)
+        hyrd1.append(r_data1[0]),hyrd2.append(r_data2[0])
         data1, data2 = process_data(byte, d_type, r_data1, r_data2, sys_volt1[0], a, row1[a][1])
         #print(data1,data2)
         hywd1.append(data1),hywd2.append(data2)
@@ -283,32 +278,32 @@ def data_read(): # データ処理
                 data3 = (r_data3[0] << 16) + r_data3[1]
                 data4 = (r_data4[0] << 16) + r_data4[1]
         #print(data3,data4)
-        kmwd1.append(data3), kmwd2.append(data4), kmrd1.append(r_data3), kmrd2.append(r_data4)
+        if a<k_list:kmrd1.append(r_data3[0]), kmrd2.append(r_data4[0]),kmwd1.append(data3), kmwd2.append(data4)
         #print(hyrd1,hyrd2,hywd1,hywd2,kmrd1,kmrd2,kmwd1,kmwd2)
-    csv_data0 = [date_time] + hyrd1+hyrd2+kmrd1+kmrd2
+    csv_data0 = [date_time] + hywd1+hywd2+kmwd1+kmwd2
     csv_data1 = [date_time] + hywd1
     csv_data2 = [date_time] + hywd2
     csv_data3 = [date_time] + kmwd1 + kmwd2
     if r_data == r_data:# 必要な計算処理
         #print("\n",hywd1,"\n",hywd2)
-        q_rdd = [ffff(hyrd1[14][0]), ffff(hyrd2[14][0]),
-                ffff(hyrd1[8][0]), ffff(hyrd2[8][0])]
-        i_calc = ((hyrd1[0][0] * hyrd1[1][0]) + (hyrd2[0][0] * hyrd2[1][0])) / 100  # AC入力電力
+        q_rdd = [ffff(hyrd1[14]), ffff(hyrd2[14]),
+                ffff(hyrd1[8]), ffff(hyrd2[8])]
+        i_calc = ((hyrd1[0] * hyrd1[1]) + (hyrd2[0] * hyrd2[1])) / 100  # AC入力電力
         o_calc = q_rdd[2] + q_rdd[3]  # AC出力電力(有効)
-        p_calc = hyrd1[19][0] + hyrd2[19][0]  # PV入力電力
-        b_calc = round(((hyrd1[13][0] * q_rdd[0] + hyrd2[13][0] * q_rdd[1]) / 100), 1)  # バッテリー電力
+        p_calc = hyrd1[19] + hyrd2[19]  # PV入力電力
+        b_calc = round(((hyrd1[13] * q_rdd[0] + hyrd2[13] * q_rdd[1]) / 100), 1)  # バッテリー電力
         b_curr = (q_rdd[0] + q_rdd[1]) / 10  # バッテリー電流
         s_calc = round((i_calc - o_calc + b_calc + p_calc), 1)  # 消費電力
-        p_powr = round(((hyrd1[13][0] * hyrd1[20][0] + hyrd2[13][0] * hyrd1[20][0]) / 100), 1)  # PV充電電力
-        g_powr = round(((hyrd1[13][0] * hyrd1[3][0] + hyrd2[13][0] * hyrd1[3][0]) / 100), 1)  # AC充電電力
+        p_powr = round(((hyrd1[13] * hyrd1[20] + hyrd2[13] * hyrd1[20]) / 100), 1)  # PV充電電力
+        g_powr = round(((hyrd1[13] * hyrd1[3] + hyrd2[13] * hyrd1[3]) / 100), 1)  # AC充電電力
         # 効率計算
         o_powr = round((o_calc) / (i_calc + p_calc + b_calc) * 100, 1) if b_calc < 0 else round(o_calc / (s_calc + o_calc) * 100, 1)
         # 計算結果のリスト化
         calc_list = [
             b_curr, b_calc, p_calc, i_calc, o_calc, s_calc,
-            hyrd1[27][0] + hyrd2[27][0], hyrd1[28][0] + hyrd2[28][0],
-            (hyrd1[29][0] + hyrd2[29][0]) / 10, (hyrd1[30][0] + hyrd2[30][0]) / 10,
-            hyrd1[31][0] + hyrd2[31][0], (hyrd1[32][0] + hyrd2[32][0]) / 10,
+            hyrd1[27] + hyrd2[27], hyrd1[28] + hyrd2[28],
+            (hyrd1[29] + hyrd2[29]) / 10, (hyrd1[30] + hyrd2[30]) / 10,
+            hyrd1[31] + hyrd2[31], (hyrd1[32] + hyrd2[32]) / 10,
             p_powr, g_powr, o_powr]
         # リスト内容を追加
         o_data.extend(calc_list)
@@ -316,7 +311,7 @@ def data_read(): # データ処理
 # ----------モニター画面
 def create_gui():                                               # GUI作成
     root=tk.Tk()
-    root.geometry('830x970+20+20')                              # ウインドウサイズ
+    root.geometry('830x1000+0+0')                              # ウインドウサイズ
     root.title("HYP4850U100-H 並列モニター")                     # ウインドウタイトル
     frame=tk.Frame(root)
     frame.grid(row=0,column=0,sticky=tk.NSEW,padx=5,pady=10)
@@ -447,7 +442,7 @@ for a in range(3):
         u_data.append(row[b][1][6])
     if a==0:n_data1,u_data1=n_data,u_data
     if a==1:n_data2,u_data2=n_data,u_data
-    if a==2:n_data3,u_data3=n_data,u_data
+    if a==2:n_data3,u_data3=n_data+n_data[1:],u_data+u_data[1:]
     
 # ----------ファイル作成
 date_time,hywd1,hywd2,kmwd1,kmwd2,o_data,csv_data0,csv_data1,csv_data2,csv_data3,err=data_read()
